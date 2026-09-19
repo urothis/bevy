@@ -13,8 +13,8 @@ use crate::{
 };
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
-use bevy_camera::{Camera, Camera3d, MainPassResolutionOverride};
-use bevy_core_pipeline::{core_3d::CORE_3D_DEPTH_FORMAT, deferred::*, prepass::*};
+use bevy_camera::{Camera, Camera3d, MainPassResolutionOverride, StencilTest};
+use bevy_core_pipeline::{deferred::*, prepass::*};
 use bevy_ecs::{
     prelude::*,
     system::{
@@ -675,14 +675,27 @@ impl PrepassPipeline {
                 ..default()
             },
             depth_stencil: Some(DepthStencilState {
-                format: CORE_3D_DEPTH_FORMAT,
+                format: mesh_key.depth_stencil_format(),
                 depth_write_enabled: Some(true),
                 depth_compare: Some(CompareFunction::GreaterEqual),
-                stencil: StencilState {
-                    front: StencilFaceState::IGNORE,
-                    back: StencilFaceState::IGNORE,
-                    read_mask: 0,
-                    write_mask: 0,
+                stencil: match mesh_key.stencil_test() {
+                    StencilTest::Disabled => StencilState::default(),
+                    StencilTest::Equal => StencilState {
+                        front: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        back: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        read_mask: 0xff,
+                        write_mask: 0,
+                    },
                 },
                 bias: DepthBiasState {
                     constant: 0,
@@ -925,7 +938,9 @@ pub fn check_prepass_views_need_specialization(
     )>,
 ) {
     for (view, msaa, depth_prepass, normal_prepass, motion_vector_prepass) in views.iter_mut() {
-        let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples());
+        let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
+            | MeshPipelineKey::from_depth_stencil_format(view.depth_stencil_format)
+            | MeshPipelineKey::from_stencil_test(view.stencil_test);
         if depth_prepass.is_some() {
             view_key |= MeshPipelineKey::DEPTH_PREPASS;
         }

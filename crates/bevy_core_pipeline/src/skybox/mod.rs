@@ -1,6 +1,6 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
-use bevy_camera::Exposure;
+use bevy_camera::{Exposure, StencilTest};
 use bevy_ecs::{
     prelude::{Component, Entity},
     query::With,
@@ -28,8 +28,6 @@ use bevy_render::{
 use bevy_shader::Shader;
 use bevy_transform::components::Transform;
 use bevy_utils::default;
-
-use crate::core_3d::CORE_3D_DEPTH_FORMAT;
 
 pub struct SkyboxPlugin;
 
@@ -141,6 +139,7 @@ struct SkyboxPipelineKey {
     target_format: TextureFormat,
     samples: u32,
     depth_format: TextureFormat,
+    stencil_test: StencilTest,
 }
 
 impl SpecializedRenderPipeline for SkyboxPipeline {
@@ -158,11 +157,24 @@ impl SpecializedRenderPipeline for SkyboxPipeline {
                 format: key.depth_format,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(CompareFunction::GreaterEqual),
-                stencil: StencilState {
-                    front: StencilFaceState::IGNORE,
-                    back: StencilFaceState::IGNORE,
-                    read_mask: 0,
-                    write_mask: 0,
+                stencil: match key.stencil_test {
+                    StencilTest::Disabled => StencilState::default(),
+                    StencilTest::Equal => StencilState {
+                        front: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        back: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        read_mask: 0xff,
+                        write_mask: 0,
+                    },
                 },
                 bias: DepthBiasState {
                     constant: 0,
@@ -207,7 +219,8 @@ fn prepare_skybox_pipelines(
             SkyboxPipelineKey {
                 target_format: view.target_format,
                 samples: msaa.samples(),
-                depth_format: CORE_3D_DEPTH_FORMAT,
+                depth_format: view.depth_stencil_format,
+                stencil_test: view.stencil_test,
             },
         );
 

@@ -9,6 +9,7 @@
 
 use bevy_app::{App, Plugin};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
+use bevy_camera::StencilTest;
 use bevy_ecs::{
     component::Component,
     entity::Entity,
@@ -26,18 +27,18 @@ use bevy_render::{
         binding_types::uniform_buffer, BindGroup, BindGroupEntries, BindGroupLayoutDescriptor,
         BindGroupLayoutEntries, CachedRenderPipelineId, CompareFunction, DepthStencilState,
         DownlevelFlags, FragmentState, MultisampleState, PipelineCache, RenderPipelineDescriptor,
-        ShaderStages, SpecializedRenderPipeline, SpecializedRenderPipelines,
+        ShaderStages, SpecializedRenderPipeline, SpecializedRenderPipelines, StencilFaceState,
+        StencilOperation, StencilState,
     },
     renderer::{RenderAdapter, RenderDevice},
     sync_component::SyncComponent,
-    view::{Msaa, ViewUniform, ViewUniforms},
+    view::{ExtractedView, Msaa, ViewUniform, ViewUniforms},
     GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
 };
 use bevy_shader::Shader;
 use bevy_utils::prelude::default;
 
 use crate::{
-    core_3d::CORE_3D_DEPTH_FORMAT,
     prepass::{
         prepass_target_descriptors, MotionVectorPrepass, NormalPrepass, PreviousViewData,
         PreviousViewUniforms,
@@ -145,6 +146,8 @@ struct BackgroundMotionVectorsPipeline {
 struct BackgroundMotionVectorsPipelineKey {
     samples: u32,
     normal_prepass: bool,
+    depth_stencil_format: bevy_render::render_resource::TextureFormat,
+    stencil_test: StencilTest,
 }
 
 fn init_background_motion_vectors_pipeline(
@@ -192,10 +195,28 @@ impl SpecializedRenderPipeline for BackgroundMotionVectorsPipeline {
             layout: vec![self.bind_group_layout.clone()],
             vertex: self.fullscreen_shader.to_vertex_state(),
             depth_stencil: Some(DepthStencilState {
-                format: CORE_3D_DEPTH_FORMAT,
+                format: key.depth_stencil_format,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(CompareFunction::GreaterEqual),
-                stencil: default(),
+                stencil: match key.stencil_test {
+                    StencilTest::Disabled => StencilState::default(),
+                    StencilTest::Equal => StencilState {
+                        front: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        back: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        read_mask: 0xff,
+                        write_mask: 0,
+                    },
+                },
                 bias: default(),
             }),
             multisample: MultisampleState {
@@ -240,20 +261,22 @@ fn prepare_background_motion_vectors_pipelines(
     mut pipelines: ResMut<SpecializedRenderPipelines<BackgroundMotionVectorsPipeline>>,
     pipeline: Res<BackgroundMotionVectorsPipeline>,
     views: Query<
-        (Entity, Has<NormalPrepass>, &Msaa),
+        (Entity, Has<NormalPrepass>, &Msaa, &ExtractedView),
         (
             With<MotionVectorPrepass>,
             Without<NoBackgroundMotionVectors>,
         ),
     >,
 ) {
-    for (entity, normal_prepass, msaa) in &views {
+    for (entity, normal_prepass, msaa, view) in &views {
         let id = pipelines.specialize(
             &pipeline_cache,
             &pipeline,
             BackgroundMotionVectorsPipelineKey {
                 samples: msaa.samples(),
                 normal_prepass,
+                depth_stencil_format: view.depth_stencil_format,
+                stencil_test: view.stencil_test,
             },
         );
         commands

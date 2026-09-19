@@ -672,12 +672,13 @@ pub fn prepare_core_3d_depth_textures(
         Entity,
         &ExtractedCamera,
         Option<&DepthPrepass>,
+        &ExtractedView,
         &Camera3d,
         &Msaa,
     )>,
 ) {
     let mut render_target_usage = <HashMap<_, _>>::default();
-    for (_, camera, depth_prepass, camera_3d, _msaa) in &views_3d {
+    for (_, camera, depth_prepass, _view, camera_3d, _msaa) in &views_3d {
         // Default usage required to write to the depth texture
         let mut usage: TextureUsages = camera_3d.depth_texture_usages.into();
         if depth_prepass.is_some() {
@@ -691,13 +692,13 @@ pub fn prepare_core_3d_depth_textures(
     }
 
     let mut textures = <HashMap<_, _>>::default();
-    for (entity, camera, _, camera_3d, msaa) in &views_3d {
+    for (entity, camera, _, view, camera_3d, msaa) in &views_3d {
         let Some(physical_target_size) = camera.physical_target_size else {
             continue;
         };
 
         let cached_texture = textures
-            .entry((camera.target.clone(), msaa))
+            .entry((camera.target.clone(), msaa, view.depth_stencil_format))
             .or_insert_with(|| {
                 let usage = *render_target_usage
                     .get(&camera.target.clone())
@@ -710,7 +711,7 @@ pub fn prepare_core_3d_depth_textures(
                     mip_level_count: 1,
                     sample_count: msaa.samples(),
                     dimension: TextureDimension::D2,
-                    format: CORE_3D_DEPTH_FORMAT,
+                    format: view.depth_stencil_format,
                     usage,
                     view_formats: &[],
                 };
@@ -725,7 +726,9 @@ pub fn prepare_core_3d_depth_textures(
                 Camera3dDepthLoadOp::Clear(v) => Some(v),
                 Camera3dDepthLoadOp::Load => None,
             },
-            None,
+            view.depth_stencil_format
+                .is_combined_depth_stencil_format()
+                .then_some(0),
         ));
     }
 }
@@ -830,7 +833,7 @@ pub fn prepare_prepass_textures(
 
         let cached_depth_texture1 = depth_prepass.then(|| {
             depth_textures1
-                .entry(camera.target.clone())
+                .entry((camera.target.clone(), view.depth_stencil_format))
                 .or_insert_with(|| {
                     let descriptor = TextureDescriptor {
                         label: Some("prepass_depth_texture_1"),
@@ -838,7 +841,7 @@ pub fn prepare_prepass_textures(
                         mip_level_count: 1,
                         sample_count: msaa.samples(),
                         dimension: TextureDimension::D2,
-                        format: CORE_3D_DEPTH_FORMAT,
+                        format: view.depth_stencil_format,
                         usage: TextureUsages::COPY_DST
                             | TextureUsages::RENDER_ATTACHMENT
                             | TextureUsages::TEXTURE_BINDING,
@@ -851,7 +854,7 @@ pub fn prepare_prepass_textures(
 
         let cached_depth_texture2 = depth_prepass_double_buffer.then(|| {
             depth_textures2
-                .entry(camera.target.clone())
+                .entry((camera.target.clone(), view.depth_stencil_format))
                 .or_insert_with(|| {
                     let descriptor = TextureDescriptor {
                         label: Some("prepass_depth_texture_2"),
@@ -859,7 +862,7 @@ pub fn prepare_prepass_textures(
                         mip_level_count: 1,
                         sample_count: msaa.samples(),
                         dimension: TextureDimension::D2,
-                        format: CORE_3D_DEPTH_FORMAT,
+                        format: view.depth_stencil_format,
                         usage: TextureUsages::COPY_DST
                             | TextureUsages::RENDER_ATTACHMENT
                             | TextureUsages::TEXTURE_BINDING,
@@ -990,6 +993,9 @@ pub fn prepare_prepass_textures(
                 cached_depth_texture1,
                 cached_depth_texture2,
                 frame_count.0,
+                view.depth_stencil_format
+                    .is_combined_depth_stencil_format()
+                    .then_some(0),
             ),
             normal: cached_normals_texture
                 .map(|t| ColorAttachment::new(t, None, None, Some(LinearRgba::BLACK.into()))),
@@ -1042,13 +1048,27 @@ fn package_double_buffered_depth_texture(
     texture1: Option<CachedTexture>,
     texture2: Option<CachedTexture>,
     frame_count: u32,
+    stencil_clear_value: Option<u32>,
 ) -> Option<DepthStencilAttachment> {
     match (texture1, texture2) {
-        (Some(t1), None) => Some(DepthStencilAttachment::new(t1, None, Some(0.0), None)),
-        (Some(t1), Some(t2)) if frame_count.is_multiple_of(2) => {
-            Some(DepthStencilAttachment::new(t1, Some(t2), Some(0.0), None))
-        }
-        (Some(t1), Some(t2)) => Some(DepthStencilAttachment::new(t2, Some(t1), Some(0.0), None)),
+        (Some(t1), None) => Some(DepthStencilAttachment::new(
+            t1,
+            None,
+            Some(0.0),
+            stencil_clear_value,
+        )),
+        (Some(t1), Some(t2)) if frame_count.is_multiple_of(2) => Some(DepthStencilAttachment::new(
+            t1,
+            Some(t2),
+            Some(0.0),
+            stencil_clear_value,
+        )),
+        (Some(t1), Some(t2)) => Some(DepthStencilAttachment::new(
+            t2,
+            Some(t1),
+            Some(0.0),
+            stencil_clear_value,
+        )),
         _ => None,
     }
 }

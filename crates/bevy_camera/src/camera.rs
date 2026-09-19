@@ -2,7 +2,7 @@ use crate::primitives::Frustum;
 
 use super::{
     visibility::{Visibility, VisibleEntities},
-    ClearColorConfig, MsaaWriteback,
+    ClearColorConfig, DepthStencilFormat, MsaaWriteback, StencilTest,
 };
 use bevy_asset::Handle;
 use bevy_derive::Deref;
@@ -380,7 +380,9 @@ pub enum ViewportConversionError {
     VisibleEntities,
     Transform,
     Visibility,
-    RenderTarget
+    RenderTarget,
+    DepthStencilFormat,
+    StencilTest
 )]
 pub struct Camera {
     /// If set, this camera will render to the given [`Viewport`] rectangle within the configured [`RenderTarget`].

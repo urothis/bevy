@@ -7,10 +7,10 @@ use bevy_camera::visibility::NoCpuCulling;
 use bevy_camera::{
     primitives::Aabb,
     visibility::{NoFrustumCulling, RenderLayers, ViewVisibility, VisibilityRange},
-    Camera, Projection,
+    Camera, Projection, StencilTest,
 };
 use bevy_core_pipeline::{
-    core_3d::{AlphaMask3d, Opaque3d, Transparent3d, CORE_3D_DEPTH_FORMAT},
+    core_3d::{AlphaMask3d, Opaque3d, Transparent3d},
     deferred::{AlphaMask3dDeferred, Opaque3dDeferred},
     oit::prepare_oit_buffers,
     prepass::MotionVectorPrepass,
@@ -412,7 +412,9 @@ pub fn check_views_need_specialization(
         seen_views.insert(view.retained_view_entity);
 
         let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
-            | MeshPipelineKey::from_target_format(view.target_format);
+            | MeshPipelineKey::from_target_format(view.target_format)
+            | MeshPipelineKey::from_depth_stencil_format(view.depth_stencil_format)
+            | MeshPipelineKey::from_stencil_test(view.stencil_test);
 
         if normal_prepass {
             view_key |= MeshPipelineKey::NORMAL_PREPASS;
@@ -3169,6 +3171,14 @@ bitflags::bitflags! {
         const SCREEN_SPACE_SPECULAR_TRANSMISSION_MEDIUM = 1 << Self::SCREEN_SPACE_SPECULAR_TRANSMISSION_SHIFT_BITS;
         const SCREEN_SPACE_SPECULAR_TRANSMISSION_HIGH   = 2 << Self::SCREEN_SPACE_SPECULAR_TRANSMISSION_SHIFT_BITS;
         const SCREEN_SPACE_SPECULAR_TRANSMISSION_ULTRA  = 3 << Self::SCREEN_SPACE_SPECULAR_TRANSMISSION_SHIFT_BITS;
+        const STENCIL_TEST_EQUAL                = 1 << 50;
+        const DEPTH_STENCIL_TEXTURE_FORMAT_RESERVED_BITS = Self::DEPTH_STENCIL_TEXTURE_FORMAT_MASK_BITS << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS;
+        const DEPTH_STENCIL_TEXTURE_NOT_SET = 0 << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS;
+        const DEPTH_STENCIL_TEXTURE_FORMAT_16UNORM = 1 << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS;
+        const DEPTH_STENCIL_TEXTURE_FORMAT_24PLUS = 2 << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS;
+        const DEPTH_STENCIL_TEXTURE_FORMAT_24PLUS_STENCIL8 = 3 << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS;
+        const DEPTH_STENCIL_TEXTURE_FORMAT_32FLOAT = 4 << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS;
+        const DEPTH_STENCIL_TEXTURE_FORMAT_32FLOAT_STENCIL8 = 5 << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS;
         const COLOR_TARGET_FORMAT_RESERVED_BITS = Self::COLOR_TARGET_FORMAT_MASK_BITS
             << Self::COLOR_TARGET_FORMAT_SHIFT_BITS;
         const ALL_RESERVED_BITS =
@@ -3178,7 +3188,8 @@ bitflags::bitflags! {
             Self::SHADOW_FILTER_METHOD_RESERVED_BITS.bits() |
             Self::VIEW_PROJECTION_RESERVED_BITS.bits() |
             Self::SCREEN_SPACE_SPECULAR_TRANSMISSION_RESERVED_BITS.bits() |
-            Self::COLOR_TARGET_FORMAT_RESERVED_BITS.bits();
+            Self::COLOR_TARGET_FORMAT_RESERVED_BITS.bits() |
+            Self::DEPTH_STENCIL_TEXTURE_FORMAT_RESERVED_BITS.bits();
     }
 }
 
@@ -3207,6 +3218,11 @@ impl MeshPipelineKey {
         Self::VIEW_PROJECTION_MASK_BITS.count_ones() as u64 + Self::VIEW_PROJECTION_SHIFT_BITS;
 
     const COLOR_TARGET_FORMAT_MASK_BITS: u64 = view::COLOR_TARGET_FORMAT_MASK_BITS as u64;
+    const DEPTH_STENCIL_TEXTURE_FORMAT_MASK_BITS: u64 = 0b111;
+    const DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS: u64 = Self::COLOR_TARGET_FORMAT_MASK_BITS
+        .count_ones() as u64
+        + Self::COLOR_TARGET_FORMAT_SHIFT_BITS;
+
     const COLOR_TARGET_FORMAT_SHIFT_BITS: u64 = Self::SCREEN_SPACE_SPECULAR_TRANSMISSION_MASK_BITS
         .count_ones() as u64
         + Self::SCREEN_SPACE_SPECULAR_TRANSMISSION_SHIFT_BITS;
@@ -3234,6 +3250,70 @@ impl MeshPipelineKey {
             & Self::COLOR_TARGET_FORMAT_MASK_BITS) as u8;
         texture_format_from_code(code)
             .expect("Unknown bits in `COLOR_TARGET_FORMAT_MASK_BITS` of the pipeline key")
+    }
+
+    /// Create a pipeline key from the view's depth/stencil texture format.
+    #[inline]
+    pub fn from_depth_stencil_format(format: TextureFormat) -> Self {
+        let bits = match format {
+            TextureFormat::Depth16Unorm => Self::DEPTH_STENCIL_TEXTURE_FORMAT_16UNORM,
+            TextureFormat::Depth24Plus => Self::DEPTH_STENCIL_TEXTURE_FORMAT_24PLUS,
+            TextureFormat::Depth24PlusStencil8 => {
+                Self::DEPTH_STENCIL_TEXTURE_FORMAT_24PLUS_STENCIL8
+            }
+            TextureFormat::Depth32Float => Self::DEPTH_STENCIL_TEXTURE_FORMAT_32FLOAT,
+            TextureFormat::Depth32FloatStencil8 => {
+                Self::DEPTH_STENCIL_TEXTURE_FORMAT_32FLOAT_STENCIL8
+            }
+            TextureFormat::Stencil8 => {
+                panic!("Stencil-only attachments cannot be used by a depth pipeline")
+            }
+            _ => panic!("Unsupported depth-stencil format for MeshPipelineKey"),
+        };
+        bits
+    }
+
+    /// Returns the depth/stencil texture format encoded in this key.
+    #[inline]
+    pub fn depth_stencil_format(&self) -> TextureFormat {
+        match Self::from_bits_retain(
+            self.bits()
+                & (Self::DEPTH_STENCIL_TEXTURE_FORMAT_MASK_BITS
+                    << Self::DEPTH_STENCIL_TEXTURE_FORMAT_SHIFT_BITS),
+        ) {
+            Self::DEPTH_STENCIL_TEXTURE_NOT_SET => {
+                panic!("Depth-stencil format not set in MeshPipelineKey")
+            }
+            Self::DEPTH_STENCIL_TEXTURE_FORMAT_16UNORM => TextureFormat::Depth16Unorm,
+            Self::DEPTH_STENCIL_TEXTURE_FORMAT_24PLUS => TextureFormat::Depth24Plus,
+            Self::DEPTH_STENCIL_TEXTURE_FORMAT_24PLUS_STENCIL8 => {
+                TextureFormat::Depth24PlusStencil8
+            }
+            Self::DEPTH_STENCIL_TEXTURE_FORMAT_32FLOAT => TextureFormat::Depth32Float,
+            Self::DEPTH_STENCIL_TEXTURE_FORMAT_32FLOAT_STENCIL8 => {
+                TextureFormat::Depth32FloatStencil8
+            }
+            _ => panic!("Invalid depth-stencil format bits in MeshPipelineKey"),
+        }
+    }
+
+    /// Create a pipeline key from the view's stencil test mode.
+    #[inline]
+    pub fn from_stencil_test(stencil_test: StencilTest) -> Self {
+        match stencil_test {
+            StencilTest::Disabled => Self::empty(),
+            StencilTest::Equal => Self::STENCIL_TEST_EQUAL,
+        }
+    }
+
+    /// Returns the stencil test mode encoded in this key.
+    #[inline]
+    pub fn stencil_test(&self) -> StencilTest {
+        if self.contains(Self::STENCIL_TEST_EQUAL) {
+            StencilTest::Equal
+        } else {
+            StencilTest::Disabled
+        }
     }
 
     pub fn msaa_samples(&self) -> u32 {
@@ -3779,14 +3859,27 @@ impl SpecializedMeshPipeline for MeshPipeline {
                 ..default()
             },
             depth_stencil: Some(DepthStencilState {
-                format: CORE_3D_DEPTH_FORMAT,
+                format: key.depth_stencil_format(),
                 depth_write_enabled: Some(depth_write_enabled),
                 depth_compare: Some(CompareFunction::GreaterEqual),
-                stencil: StencilState {
-                    front: StencilFaceState::IGNORE,
-                    back: StencilFaceState::IGNORE,
-                    read_mask: 0,
-                    write_mask: 0,
+                stencil: match key.stencil_test() {
+                    StencilTest::Disabled => StencilState::default(),
+                    StencilTest::Equal => StencilState {
+                        front: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        back: StencilFaceState {
+                            compare: CompareFunction::Equal,
+                            fail_op: StencilOperation::Keep,
+                            depth_fail_op: StencilOperation::Keep,
+                            pass_op: StencilOperation::Keep,
+                        },
+                        read_mask: 0xff,
+                        write_mask: 0,
+                    },
                 },
                 bias: DepthBiasState {
                     constant: 0,

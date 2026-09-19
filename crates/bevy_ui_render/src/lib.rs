@@ -24,7 +24,7 @@ mod debug_overlay;
 
 use bevy_a11y::AccessibilitySystems;
 use bevy_camera::visibility::InheritedVisibility;
-use bevy_camera::{Camera, Camera2d, Camera3d, RenderTarget};
+use bevy_camera::{Camera, Camera2d, Camera3d, DepthStencilFormat, RenderTarget, StencilTest};
 use bevy_ecs::entity::EntityIndexMap;
 use bevy_reflect::prelude::ReflectDefault;
 use bevy_reflect::Reflect;
@@ -1253,6 +1253,8 @@ pub fn extract_ui_camera_view(
                 Entity,
                 RenderEntity,
                 &Camera,
+                &DepthStencilFormat,
+                &StencilTest,
                 Option<&UiAntiAlias>,
                 Option<&BoxShadowSamples>,
             ),
@@ -1266,7 +1268,16 @@ pub fn extract_ui_camera_view(
     mut cameras_updated_this_frame: Local<MainEntityHashSet>,
 ) {
     cameras_updated_this_frame.clear();
-    for (main_entity, render_entity, camera, ui_anti_alias, shadow_samples) in &query {
+    for (
+        main_entity,
+        render_entity,
+        camera,
+        depth_stencil_format,
+        stencil_test,
+        ui_anti_alias,
+        shadow_samples,
+    ) in &query
+    {
         let main_entity = MainEntity::from(main_entity);
         let retained_view_entity = RetainedViewEntity::new(main_entity, None, UI_CAMERA_SUBVIEW);
 
@@ -1307,6 +1318,8 @@ pub fn extract_ui_camera_view(
                 target_format,
                 viewport: UVec4::from((physical_viewport_rect.min, physical_viewport_rect.size())),
                 color_grading: Default::default(),
+                depth_stencil_format: depth_stencil_format.format(),
+                stencil_test: *stencil_test,
                 invert_culling: false,
             };
             // Link to the main camera view.

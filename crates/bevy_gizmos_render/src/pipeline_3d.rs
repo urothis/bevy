@@ -5,8 +5,8 @@ use crate::{
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::{load_embedded_asset, AssetServer, Handle};
-use bevy_camera::visibility::RenderLayers;
-use bevy_core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d, CORE_3D_DEPTH_FORMAT};
+use bevy_camera::{visibility::RenderLayers, StencilTest};
+use bevy_core_pipeline::core_3d::{Transparent3d, TransparentSortingInfo3d};
 use bevy_gizmos::config::{GizmoLineJoint, GizmoLineStyle, GizmoMeshConfig};
 
 use bevy_ecs::{
@@ -96,7 +96,7 @@ fn init_line_gizmo_pipelines(
                 uniform_bind_group_layout.layout.clone(),
             ],
             depth_stencil: Some(DepthStencilState {
-                format: CORE_3D_DEPTH_FORMAT,
+                format: TextureFormat::Depth32Float,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(CompareFunction::Greater),
                 stencil: StencilState::default(),
@@ -141,6 +141,10 @@ impl Specializer<RenderPipeline> for LineGizmoPipelineSpecializer {
         descriptor.set_layout(0, view_layout.main_layout.clone());
         descriptor.vertex.buffers = line_gizmo_vertex_buffer_layouts(key.strip);
         descriptor.multisample.count = key.view_key.msaa_samples();
+        if let Some(depth_stencil) = descriptor.depth_stencil.as_mut() {
+            depth_stencil.format = key.view_key.depth_stencil_format();
+            depth_stencil.stencil = stencil_state(key.view_key.stencil_test());
+        }
 
         let fragment = descriptor.fragment_mut()?;
 
@@ -237,10 +241,10 @@ impl SpecializedRenderPipeline for LineJointGizmoPipeline {
             }),
             layout,
             depth_stencil: Some(DepthStencilState {
-                format: CORE_3D_DEPTH_FORMAT,
+                format: key.view_key.depth_stencil_format(),
                 depth_write_enabled: Some(true),
                 depth_compare: Some(CompareFunction::Greater),
-                stencil: StencilState::default(),
+                stencil: stencil_state(key.view_key.stencil_test()),
                 bias: DepthBiasState::default(),
             }),
             multisample: MultisampleState {
@@ -251,6 +255,28 @@ impl SpecializedRenderPipeline for LineJointGizmoPipeline {
             label: Some("LineJointGizmo 3d Pipeline".into()),
             ..default()
         }
+    }
+}
+
+fn stencil_state(test: StencilTest) -> StencilState {
+    match test {
+        StencilTest::Disabled => StencilState::default(),
+        StencilTest::Equal => StencilState {
+            front: StencilFaceState {
+                compare: CompareFunction::Equal,
+                fail_op: StencilOperation::Keep,
+                depth_fail_op: StencilOperation::Keep,
+                pass_op: StencilOperation::Keep,
+            },
+            back: StencilFaceState {
+                compare: CompareFunction::Equal,
+                fail_op: StencilOperation::Keep,
+                depth_fail_op: StencilOperation::Keep,
+                pass_op: StencilOperation::Keep,
+            },
+            read_mask: 0xff,
+            write_mask: 0,
+        },
     }
 }
 

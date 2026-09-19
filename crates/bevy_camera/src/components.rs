@@ -3,7 +3,7 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::{std_traits::ReflectDefault, Reflect, ReflectDeserialize, ReflectSerialize};
 use bevy_transform::prelude::{GlobalTransform, Transform};
 use serde::{Deserialize, Serialize};
-use wgpu_types::{LoadOp, TextureUsages};
+use wgpu_types::{LoadOp, TextureFormat, TextureUsages};
 
 /// A 2D camera component. Enables the 2D render graph for a [`Camera`].
 #[derive(Component, Default, Reflect, Clone)]
@@ -107,4 +107,86 @@ impl CompositingSpace {
     pub fn is_linear(self) -> bool {
         matches!(self, CompositingSpace::Linear)
     }
+}
+
+/// The format of the depth/stencil texture created for a camera's main pass.
+///
+/// This is a component on Camera rather than a field on Camera3d so
+/// custom camera render graphs and 2D/3D camera views can use the same
+/// attachment selection path. The default remains Depth32Float
+/// for compatibility with Bevy's historical 3D depth texture.
+#[derive(
+    Component, Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
+)]
+#[reflect(Component, Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
+pub enum DepthStencilFormat {
+    /// A stencil-only attachment.
+    Stencil8,
+    /// A 16-bit unsigned-normalized depth attachment.
+    Depth16Unorm,
+    /// A depth attachment with at least 24 bits of depth precision.
+    Depth24Plus,
+    /// A depth attachment with at least 24 bits of depth precision and 8 bits of stencil.
+    Depth24PlusStencil8,
+    /// A 32-bit floating-point depth attachment.
+    #[default]
+    Depth32Float,
+    /// A 32-bit floating-point depth attachment with 8 bits of stencil.
+    Depth32FloatStencil8,
+}
+
+impl DepthStencilFormat {
+    /// Returns the underlying WebGPU texture format.
+    #[inline]
+    pub const fn format(self) -> TextureFormat {
+        match self {
+            Self::Stencil8 => TextureFormat::Stencil8,
+            Self::Depth16Unorm => TextureFormat::Depth16Unorm,
+            Self::Depth24Plus => TextureFormat::Depth24Plus,
+            Self::Depth24PlusStencil8 => TextureFormat::Depth24PlusStencil8,
+            Self::Depth32Float => TextureFormat::Depth32Float,
+            Self::Depth32FloatStencil8 => TextureFormat::Depth32FloatStencil8,
+        }
+    }
+
+    /// Returns whether this format has a stencil aspect.
+    #[inline]
+    pub const fn has_stencil(self) -> bool {
+        matches!(
+            self,
+            Self::Stencil8 | Self::Depth24PlusStencil8 | Self::Depth32FloatStencil8
+        )
+    }
+}
+
+impl From<DepthStencilFormat> for TextureFormat {
+    #[inline]
+    fn from(format: DepthStencilFormat) -> Self {
+        match format {
+            DepthStencilFormat::Stencil8 => TextureFormat::Stencil8,
+            DepthStencilFormat::Depth16Unorm => TextureFormat::Depth16Unorm,
+            DepthStencilFormat::Depth24Plus => TextureFormat::Depth24Plus,
+            DepthStencilFormat::Depth24PlusStencil8 => TextureFormat::Depth24PlusStencil8,
+            DepthStencilFormat::Depth32Float => TextureFormat::Depth32Float,
+            DepthStencilFormat::Depth32FloatStencil8 => TextureFormat::Depth32FloatStencil8,
+        }
+    }
+}
+
+/// Selects the stencil test used by camera-view pipelines.
+///
+/// Disabled preserves Bevy's normal depth-only behavior. Equal enables a
+/// read-only stencil comparison against the render pass's stencil reference,
+/// which is useful for rendering a view through a previously written portal
+/// mask.
+#[derive(
+    Component, Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
+)]
+#[reflect(Component, Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
+pub enum StencilTest {
+    /// Do not test the stencil aspect.
+    #[default]
+    Disabled,
+    /// Only pass fragments whose stencil value equals the pass reference.
+    Equal,
 }

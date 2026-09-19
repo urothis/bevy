@@ -34,8 +34,9 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::{
         visibility::{InheritedVisibility, ViewVisibility, Visibility},
-        Camera, Camera2d, Camera3d, ClearColor, ClearColorConfig, CompositingSpace, MsaaWriteback,
-        OrthographicProjection, PerspectiveProjection, Projection,
+        Camera, Camera2d, Camera3d, ClearColor, ClearColorConfig, CompositingSpace,
+        DepthStencilFormat, MsaaWriteback, OrthographicProjection, PerspectiveProjection,
+        Projection, StencilTest,
     };
 }
 

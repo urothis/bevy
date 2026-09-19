@@ -4,7 +4,7 @@ pub mod window;
 
 use bevy_camera::{
     primitives::Frustum, Camera, CameraMainTextureUsages, ClearColor, ClearColorConfig,
-    CompositingSpace, Exposure, MainPassResolutionOverride, NormalizedRenderTarget,
+    CompositingSpace, Exposure, MainPassResolutionOverride, NormalizedRenderTarget, StencilTest,
 };
 use bevy_diagnostic::FrameCount;
 pub use composition::*;
@@ -461,6 +461,10 @@ pub struct ExtractedView {
     // uvec4(origin.x, origin.y, width, height)
     pub viewport: UVec4,
     pub color_grading: ColorGrading,
+    /// The depth/stencil texture format used by this view.
+    pub depth_stencil_format: TextureFormat,
+    /// The stencil test used by this view.
+    pub stencil_test: StencilTest,
 
     /// Whether to switch culling mode so that materials that request backface
     /// culling cull front faces, and vice versa.

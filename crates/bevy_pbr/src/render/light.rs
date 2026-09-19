@@ -8,7 +8,7 @@ use bevy_camera::visibility::{
     CascadesVisibleEntities, CubemapVisibleEntities, RenderLayers, ViewVisibility,
     VisibleMeshEntities,
 };
-use bevy_camera::{Camera, Camera3d, RenderTarget, ShadowLodOrigin};
+use bevy_camera::{Camera, Camera3d, RenderTarget, ShadowLodOrigin, StencilTest};
 use bevy_color::ColorToComponents;
 use bevy_core_pipeline::schedule::RootNonCameraView;
 use bevy_derive::{Deref, DerefMut};
@@ -2016,6 +2016,8 @@ pub fn prepare_lights(
                         clip_from_world: Some(cascade.clip_from_world),
                         target_format: CORE_3D_SHADOW_MAP_FORMAT,
                         color_grading: Default::default(),
+                        depth_stencil_format: TextureFormat::Depth32Float,
+                        stencil_test: StencilTest::Disabled,
                         invert_culling: false,
                     },
                     frustum,
@@ -2228,6 +2230,8 @@ fn create_point_shadow_maps(
                 clip_from_view: cube_face_projection,
                 target_format: CORE_3D_SHADOW_MAP_FORMAT,
                 color_grading: Default::default(),
+                depth_stencil_format: TextureFormat::Depth32Float,
+                stencil_test: StencilTest::Disabled,
                 invert_culling: false,
             },
             *frustum,
@@ -2322,6 +2326,8 @@ fn create_spot_shadow_map(
             clip_from_world: None,
             target_format: CORE_3D_SHADOW_MAP_FORMAT,
             color_grading: Default::default(),
+            depth_stencil_format: TextureFormat::Depth32Float,
+            stencil_test: StencilTest::Disabled,
             invert_culling: false,
         },
         *spot_light_frustum.unwrap(),
@@ -2567,8 +2573,12 @@ pub(crate) fn specialize_shadows(
                     continue;
                 };
 
-                let mut mesh_key =
-                    *light_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+                let mut mesh_key = *light_key
+                    | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits())
+                    | MeshPipelineKey::from_depth_stencil_format(
+                        extracted_view_light.depth_stencil_format,
+                    )
+                    | MeshPipelineKey::from_stencil_test(extracted_view_light.stencil_test);
 
                 // Even though we don't use the lightmap in the shadow map, the
                 // `SetMeshBindGroup` render command will bind the data for it. So
