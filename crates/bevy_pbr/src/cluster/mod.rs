@@ -26,6 +26,25 @@ use crate::{MeshPipeline, RenderViewLightProbes};
 
 pub(crate) mod gpu;
 
+/// Adds Bevy's per-view GPU light-clustering system to a custom render schedule.
+///
+/// `GpuClusteringPlugin` registers this system automatically for the built-in
+/// 3D render graph. Custom camera schedules that render Bevy's PBR phases
+/// must add it explicitly so their views receive the same clustered point,
+/// spot, and rectangular-light data as ordinary cameras. The system is placed
+/// in `set` and runs only when GPU clustering is enabled.
+///
+/// The schedule must run in the render world after the clustering resources and
+/// bind groups have been prepared, and while the camera driver has selected the
+/// current view.
+pub fn add_gpu_clustering_system(schedule: &mut Schedule, set: impl SystemSet) {
+    schedule.add_systems(
+        gpu::cluster_on_gpu
+            .in_set(set)
+            .run_if(gpu_clustering_is_enabled),
+    );
+}
+
 // NOTE: this must be kept in sync with the same constants in
 // `mesh_view_types.wesl`.
 pub const MAX_UNIFORM_BUFFER_CLUSTERABLE_OBJECTS: usize = 204;

@@ -760,7 +760,7 @@ static GPU_CLUSTERING_INDICES: [u32; 6] = [0, 1, 2, 1, 3, 2];
 /// The buffers that store the vertices and indices for the quad that we
 /// rasterize to represent each clusterable object Z slice.
 #[derive(Resource)]
-struct GpuClusteringMeshBuffers {
+pub(super) struct GpuClusteringMeshBuffers {
     /// The vertex buffer containing the 4 vertices of a quad.
     vertex_buffer: Buffer,
     /// The index buffer containing the 6 indices of a quad.
@@ -802,7 +802,7 @@ pub struct ViewGpuClusteringPipelineIds {
 
 /// The render command building system that performs GPU clustering on each
 /// view.
-fn cluster_on_gpu(
+pub(super) fn cluster_on_gpu(
     view_query: ViewQuery<(
         &MainEntity,
         Option<&ViewGpuClusteringBuffers>,
