@@ -18,7 +18,7 @@ use bevy_window::{NormalizedWindowRef, WindowRef};
 use core::ops::Range;
 use derive_more::derive::From;
 use thiserror::Error;
-use wgpu_types::{BlendState, TextureUsages};
+use wgpu_types::{BlendState, TextureFormat, TextureUsages};
 
 /// Render viewport configuration for the [`Camera`] component.
 ///
@@ -1041,6 +1041,42 @@ impl From<Handle<Image>> for ImageRenderTarget {
 impl Default for RenderTarget {
     fn default() -> Self {
         Self::Window(Default::default())
+    }
+}
+
+/// Controls the color format used by a camera's main-pass intermediate texture.
+///
+/// This is primarily useful for cameras with [`RenderTarget::None`]. Such a
+/// camera has no output view from which to infer a format, but its render
+/// pipelines still need to match the color attachment used by a parent pass.
+/// The default [`Target`](Self::Target) behavior preserves Bevy's existing
+/// target-format resolution.
+///
+/// [`Inherit`](Self::Inherit) refers to another camera entity in the main
+/// world. The render extraction step resolves that camera's effective format,
+/// including HDR, compositing-space, and explicit override settings.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CameraMainPassTextureFormat {
+    /// Resolve the format from this camera's [`RenderTarget`].
+    #[default]
+    Target,
+    /// Reuse another camera's resolved main-pass format.
+    Inherit(Entity),
+    /// Use an explicit GPU color format.
+    Override(TextureFormat),
+}
+
+impl CameraMainPassTextureFormat {
+    /// Reuse the effective main-pass format of another camera.
+    #[inline]
+    pub const fn inherit_from(camera: Entity) -> Self {
+        Self::Inherit(camera)
+    }
+
+    /// Set an explicit main-pass color format.
+    #[inline]
+    pub const fn override_format(format: TextureFormat) -> Self {
+        Self::Override(format)
     }
 }
 

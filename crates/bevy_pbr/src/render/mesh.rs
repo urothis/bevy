@@ -3253,6 +3253,10 @@ impl MeshPipelineKey {
     }
 
     /// Create a pipeline key from the view's depth/stencil texture format.
+    ///
+    /// Only depth formats exposed by [`DepthStencilFormat`](bevy_camera::DepthStencilFormat)
+    /// are supported. Passing a color or stencil-only format is a programming
+    /// error and panics.
     #[inline]
     pub fn from_depth_stencil_format(format: TextureFormat) -> Self {
         let bits = match format {

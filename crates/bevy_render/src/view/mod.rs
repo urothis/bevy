@@ -462,6 +462,9 @@ pub struct ExtractedView {
     pub viewport: UVec4,
     pub color_grading: ColorGrading,
     /// The depth/stencil texture format used by this view.
+    ///
+    /// The built-in meshlet renderer only supports `TextureFormat::Depth32Float`;
+    /// custom render graphs using meshlets must retain that format.
     pub depth_stencil_format: TextureFormat,
     /// The stencil test used by this view.
     pub stencil_test: StencilTest,

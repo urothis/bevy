@@ -1,4 +1,4 @@
-use core::mem;
+use core::mem; // diagnostic
 
 use crate::{
     batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport},
@@ -23,10 +23,10 @@ use bevy_asset::{AssetEvent, AssetEventSystems, AssetId, Assets};
 use bevy_camera::{
     primitives::Frustum,
     visibility::{self, RenderLayers, VisibleEntities},
-    Camera, Camera2d, Camera3d, CameraMainTextureUsages, CameraOutputMode, CameraUpdateSystems,
-    ClearColor, ClearColorConfig, CompositingSpace, DepthStencilFormat, Exposure, Hdr,
-    ManualTextureViewHandle, MsaaWriteback, NormalizedRenderTarget, Projection, RenderTarget,
-    RenderTargetInfo, StencilTest, Viewport,
+    Camera, Camera2d, Camera3d, CameraMainPassTextureFormat, CameraMainTextureUsages,
+    CameraOutputMode, CameraUpdateSystems, ClearColor, ClearColorConfig, CompositingSpace,
+    DepthStencilFormat, Exposure, Hdr, ManualTextureViewHandle, MsaaWriteback,
+    NormalizedRenderTarget, Projection, RenderTarget, RenderTargetInfo, StencilTest, Viewport,
 };
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{
@@ -55,7 +55,11 @@ use bevy_window::{PrimaryWindow, Window, WindowCreated, WindowResized, WindowSca
 use itertools::Either;
 use wgpu::TextureFormat;
 
-/// Main-pass color [`TextureFormat`] keyed by camera render entity.
+/// Effective main-pass color [`TextureFormat`] keyed by camera render entity.
+///
+/// The map includes formats resolved from [`CameraMainPassTextureFormat`], so
+/// custom render systems can inspect the same format used for pipeline
+/// specialization.
 #[derive(Resource, Default, Deref, DerefMut)]
 pub struct CameraMainPassTextureFormats(pub EntityHashMap<TextureFormat>);
 
@@ -364,7 +368,6 @@ pub fn camera_system(
     mut cameras: Query<(&mut Camera, &RenderTarget, &mut Projection)>,
 ) -> Result<(), BevyError> {
     let primary_window = primary_window.iter().next();
-
     let mut changed_window_ids = EntityHashSet::default();
     changed_window_ids.extend(window_created_reader.read().map(|event| event.window));
     changed_window_ids.extend(window_resized_reader.read().map(|event| event.window));
@@ -499,6 +502,16 @@ pub fn extract_cameras(
             ),
         )>,
     >,
+    camera_format_query: Extract<
+        Query<(
+            Entity,
+            &Camera,
+            &RenderTarget,
+            Option<&CameraMainPassTextureFormat>,
+            Has<Hdr>,
+            Option<&CompositingSpace>,
+        )>,
+    >,
     primary_window: Extract<Query<Entity, With<PrimaryWindow>>>,
     manual_texture_views: Res<ManualTextureViews>,
     images: Res<RenderAssets<GpuImage>>,
@@ -512,6 +525,49 @@ pub fn extract_cameras(
 ) {
     main_pass_formats.clear();
     let primary_window = primary_window.iter().next();
+    let target_format_for =
+        |target: &NormalizedRenderTarget,
+         hdr: bool,
+         compositing_space: Option<&CompositingSpace>| {
+            let output_texture_format = target
+                .get_texture_view_format(&extracted_swap_chains, &images, &manual_texture_views)
+                .map(|format| normalize_bgra8(target, format))
+                .unwrap_or(TextureFormat::Rgba8UnormSrgb);
+            if hdr {
+                TextureFormat::Rgba16Float
+            } else if compositing_space.is_some_and(|space| *space == CompositingSpace::Srgb) {
+                TextureFormat::Rgba8Unorm
+            } else {
+                output_texture_format
+            }
+        };
+
+    // Resolve these before extracting views so a synthetic camera can inherit
+    // the effective format of a parent camera regardless of query iteration order.
+    let mut requested_formats = EntityHashMap::default();
+    for (main_entity, camera, render_target, format, hdr, compositing_space) in
+        camera_format_query.iter()
+    {
+        if !camera.is_active {
+            continue;
+        }
+        let Some(target) = render_target.normalize(primary_window) else {
+            continue;
+        };
+        let target_format = target_format_for(&target, hdr, compositing_space);
+        requested_formats.insert(
+            main_entity,
+            (
+                target_format,
+                format
+                    .copied()
+                    .unwrap_or(CameraMainPassTextureFormat::Target),
+            ),
+        );
+    }
+
+    let resolved_formats = resolve_camera_main_pass_texture_formats(&requested_formats);
+
     type ExtractedCameraComponents = (
         ExtractedCamera,
         ExtractedView,
@@ -608,26 +664,25 @@ pub fn extract_cameras(
             // *now*, phases need to be able to find the entities that were just
             // removed from it.
 
-            let target = render_target.normalize(primary_window);
-            let output_texture_format = target
-                .as_ref()
-                .and_then(|target| {
-                    target
-                        .get_texture_view_format(
-                            &extracted_swap_chains,
-                            &images,
-                            &manual_texture_views,
-                        )
-                        .map(|format| normalize_bgra8(target, format))
-                })
-                .unwrap_or(TextureFormat::Rgba8UnormSrgb);
-            let target_format = if hdr {
-                TextureFormat::Rgba16Float
-            } else if compositing_space.is_some_and(|s| *s == CompositingSpace::Srgb) {
-                TextureFormat::Rgba8Unorm
+            let stencil_test = if depth_stencil_format.has_stencil() {
+                *stencil_test
             } else {
-                output_texture_format
+                if *stencil_test == StencilTest::Equal {
+                    warn_once!(
+                        "Camera {:?} requested stencil testing with a depth-only attachment; disabling the stencil test", main_entity
+                    );
+                }
+                StencilTest::Disabled
             };
+            let target = render_target.normalize(primary_window);
+            let target_format = target
+                .as_ref()
+                .map(|target| target_format_for(target, hdr, compositing_space))
+                .unwrap_or(TextureFormat::Rgba8UnormSrgb);
+            let target_format = resolved_formats
+                .get(&main_entity)
+                .copied()
+                .unwrap_or(target_format);
             main_pass_formats.insert(render_entity, target_format);
 
             let mut commands = commands.entity(render_entity);
@@ -664,7 +719,7 @@ pub fn extract_cameras(
                     ),
                     color_grading,
                     depth_stencil_format: depth_stencil_format.format(),
-                    stencil_test: *stencil_test,
+                    stencil_test,
                     invert_culling: camera.invert_culling,
                 },
                 render_visible_entities_cpu_culling,
@@ -721,6 +776,133 @@ fn normalize_bgra8(target: &NormalizedRenderTarget, format: TextureFormat) -> Te
         return TextureFormat::Rgba8UnormSrgb;
     }
     format
+}
+
+fn resolve_camera_main_pass_texture_formats(
+    requested_formats: &EntityHashMap<(TextureFormat, CameraMainPassTextureFormat)>,
+) -> EntityHashMap<TextureFormat> {
+    let mut resolved_formats = EntityHashMap::default();
+    let mut states = EntityHashMap::default();
+    let mut stack = Vec::new();
+    let mut cycle_detected = false;
+
+    // Resolve each camera from the request graph instead of repeatedly relaxing a
+    // hash map. This makes inheritance independent of map iteration order and,
+    // more importantly, gives cycles a well-defined result.
+    for entity in requested_formats.keys().copied() {
+        resolve_camera_main_pass_texture_format(
+            entity,
+            requested_formats,
+            &mut states,
+            &mut resolved_formats,
+            &mut stack,
+            &mut cycle_detected,
+        );
+    }
+
+    if cycle_detected {
+        warn_once!(
+            "CameraMainPassTextureFormat inheritance cycle detected; affected cameras are using their own target formats."
+        );
+    }
+
+    resolved_formats
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CameraMainPassTextureFormatResolutionState {
+    Visiting,
+    Resolved,
+}
+
+fn resolve_camera_main_pass_texture_format(
+    entity: Entity,
+    requested_formats: &EntityHashMap<(TextureFormat, CameraMainPassTextureFormat)>,
+    states: &mut EntityHashMap<CameraMainPassTextureFormatResolutionState>,
+    resolved_formats: &mut EntityHashMap<TextureFormat>,
+    stack: &mut Vec<Entity>,
+    cycle_detected: &mut bool,
+) -> TextureFormat {
+    if let Some(state) = states.get(&entity) {
+        match state {
+            CameraMainPassTextureFormatResolutionState::Resolved => {
+                return resolved_formats[&entity];
+            }
+            CameraMainPassTextureFormatResolutionState::Visiting => {
+                // Every entity in the cycle gets its own target format. Marking
+                // all members here prevents the unwind from copying one member's
+                // fallback to the others.
+                *cycle_detected = true;
+                let cycle_start = stack
+                    .iter()
+                    .position(|candidate| *candidate == entity)
+                    .expect("a visiting camera must be present in the resolution stack");
+                for cycle_entity in &stack[cycle_start..] {
+                    let (target_format, _) = requested_formats[cycle_entity];
+                    resolved_formats.insert(*cycle_entity, target_format);
+                    states.insert(
+                        *cycle_entity,
+                        CameraMainPassTextureFormatResolutionState::Resolved,
+                    );
+                }
+                return resolved_formats[&entity];
+            }
+        }
+    }
+
+    let (target_format, format) = requested_formats[&entity];
+    states.insert(entity, CameraMainPassTextureFormatResolutionState::Visiting);
+    stack.push(entity);
+
+    let inherited_format = match format {
+        CameraMainPassTextureFormat::Target => target_format,
+        CameraMainPassTextureFormat::Inherit(parent) => {
+            if requested_formats.contains_key(&parent) {
+                resolve_camera_main_pass_texture_format(
+                    parent,
+                    requested_formats,
+                    states,
+                    resolved_formats,
+                    stack,
+                    cycle_detected,
+                )
+            } else {
+                target_format
+            }
+        }
+        CameraMainPassTextureFormat::Override(format) => {
+            if is_valid_main_pass_color_format(format) {
+                format
+            } else {
+                warn_once!(
+                    "CameraMainPassTextureFormat::Override requires an uncompressed, single-plane color format; falling back to the camera's target format."
+                );
+                target_format
+            }
+        }
+    };
+
+    // A recursive call can discover a cycle containing this entity and mark it
+    // resolved before returning. Preserve the cycle member's own fallback rather
+    // than replacing it with the value returned by another member.
+    let resolved =
+        if states.get(&entity) == Some(&CameraMainPassTextureFormatResolutionState::Resolved) {
+            resolved_formats[&entity]
+        } else {
+            resolved_formats.insert(entity, inherited_format);
+            states.insert(entity, CameraMainPassTextureFormatResolutionState::Resolved);
+            inherited_format
+        };
+
+    stack.pop();
+    resolved
+}
+
+/// Structural validation only: adapter-specific format features are not
+/// available during extraction, so callers remain responsible for selecting a
+/// format supported as a color render attachment by the active device.
+fn is_valid_main_pass_color_format(format: TextureFormat) -> bool {
+    !format.is_depth_stencil_format() && !format.is_compressed() && !format.is_multi_planar_format()
 }
 
 /// Cameras sorted by their order field. This is updated in the [`sort_cameras`] system.
@@ -1229,5 +1411,119 @@ mod tests {
         assert_eq!(index(lower), 0);
         assert_eq!(index(upper), 1);
         assert_eq!(index(solo), 0);
+    }
+    #[test]
+    fn resolves_inherited_and_overridden_main_pass_formats() {
+        let parent = Entity::from_raw_u32(1).unwrap();
+        let inherited = Entity::from_raw_u32(2).unwrap();
+        let default = Entity::from_raw_u32(3).unwrap();
+        let mut requested = EntityHashMap::default();
+        requested.insert(
+            parent,
+            (
+                TextureFormat::Rgba8UnormSrgb,
+                CameraMainPassTextureFormat::Override(TextureFormat::Rgba16Float),
+            ),
+        );
+        requested.insert(
+            inherited,
+            (
+                TextureFormat::Rgba8UnormSrgb,
+                CameraMainPassTextureFormat::Inherit(parent),
+            ),
+        );
+        requested.insert(
+            default,
+            (
+                TextureFormat::Rgba8UnormSrgb,
+                CameraMainPassTextureFormat::Target,
+            ),
+        );
+        let grandchild = Entity::from_raw_u32(4).unwrap();
+        requested.insert(
+            grandchild,
+            (
+                TextureFormat::R8Unorm,
+                CameraMainPassTextureFormat::Inherit(inherited),
+            ),
+        );
+
+        let resolved = resolve_camera_main_pass_texture_formats(&requested);
+        assert_eq!(resolved[&parent], TextureFormat::Rgba16Float);
+        assert_eq!(resolved[&inherited], TextureFormat::Rgba16Float);
+        assert_eq!(resolved[&default], TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(resolved[&grandchild], TextureFormat::Rgba16Float);
+    }
+
+    #[test]
+    fn missing_format_parent_falls_back_to_own_target() {
+        let camera = Entity::from_raw_u32(1).unwrap();
+        let missing = Entity::from_raw_u32(99).unwrap();
+        let requested = EntityHashMap::from_iter([(
+            camera,
+            (
+                TextureFormat::Rgba8Unorm,
+                CameraMainPassTextureFormat::Inherit(missing),
+            ),
+        )]);
+
+        let resolved = resolve_camera_main_pass_texture_formats(&requested);
+        assert_eq!(resolved[&camera], TextureFormat::Rgba8Unorm);
+    }
+
+    #[test]
+    fn self_referential_format_inheritance_uses_own_target() {
+        let camera = Entity::from_raw_u32(1).unwrap();
+        let requested = EntityHashMap::from_iter([(
+            camera,
+            (
+                TextureFormat::Rgba8Unorm,
+                CameraMainPassTextureFormat::Inherit(camera),
+            ),
+        )]);
+
+        let resolved = resolve_camera_main_pass_texture_formats(&requested);
+        assert_eq!(resolved[&camera], TextureFormat::Rgba8Unorm);
+    }
+
+    #[test]
+    fn cyclic_format_inheritance_uses_each_camera_target() {
+        let first = Entity::from_raw_u32(1).unwrap();
+        let second = Entity::from_raw_u32(2).unwrap();
+        let requested = EntityHashMap::from_iter([
+            (
+                first,
+                (
+                    TextureFormat::Rgba8Unorm,
+                    CameraMainPassTextureFormat::Inherit(second),
+                ),
+            ),
+            (
+                second,
+                (
+                    TextureFormat::Rgba16Float,
+                    CameraMainPassTextureFormat::Inherit(first),
+                ),
+            ),
+        ]);
+
+        let resolved = resolve_camera_main_pass_texture_formats(&requested);
+        assert_eq!(resolved[&first], TextureFormat::Rgba8Unorm);
+        assert_eq!(resolved[&second], TextureFormat::Rgba16Float);
+    }
+
+    #[test]
+    fn invalid_color_override_falls_back_to_target() {
+        let camera = Entity::from_raw_u32(1).unwrap();
+        let requested = EntityHashMap::from_iter([(
+            camera,
+            (
+                TextureFormat::Rgba8UnormSrgb,
+                CameraMainPassTextureFormat::Override(TextureFormat::Depth32Float),
+            ),
+        )]);
+
+        let resolved = resolve_camera_main_pass_texture_formats(&requested);
+        assert_eq!(resolved[&camera], TextureFormat::Rgba8UnormSrgb);
     }
 }

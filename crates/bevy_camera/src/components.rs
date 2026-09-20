@@ -109,19 +109,23 @@ impl CompositingSpace {
     }
 }
 
-/// The format of the depth/stencil texture created for a camera's main pass.
+/// The format of the depth/stencil texture created for a camera's main 3D pass.
 ///
-/// This is a component on Camera rather than a field on Camera3d so
-/// custom camera render graphs and 2D/3D camera views can use the same
-/// attachment selection path. The default remains Depth32Float
-/// for compatibility with Bevy's historical 3D depth texture.
+/// This component is intentionally shared by the camera and render-world view
+/// extraction paths so custom 3D render graphs can select the same attachment
+/// format as the built-in 3D graph. [`Camera2d`](crate::Camera2d) continues to
+/// use its fixed depth format; changing this component does not change the
+/// Core2d attachment.
+///
+/// The default remains [`Depth32Float`](Self::Depth32Float) for compatibility
+/// with Bevy's historical 3D depth texture. Meshlet rendering currently
+/// requires that default depth-only format and does not support custom depth
+/// or stencil formats.
 #[derive(
     Component, Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
 )]
 #[reflect(Component, Serialize, Deserialize, Clone, Default, Debug, PartialEq)]
 pub enum DepthStencilFormat {
-    /// A stencil-only attachment.
-    Stencil8,
     /// A 16-bit unsigned-normalized depth attachment.
     Depth16Unorm,
     /// A depth attachment with at least 24 bits of depth precision.
@@ -140,7 +144,6 @@ impl DepthStencilFormat {
     #[inline]
     pub const fn format(self) -> TextureFormat {
         match self {
-            Self::Stencil8 => TextureFormat::Stencil8,
             Self::Depth16Unorm => TextureFormat::Depth16Unorm,
             Self::Depth24Plus => TextureFormat::Depth24Plus,
             Self::Depth24PlusStencil8 => TextureFormat::Depth24PlusStencil8,
@@ -152,10 +155,7 @@ impl DepthStencilFormat {
     /// Returns whether this format has a stencil aspect.
     #[inline]
     pub const fn has_stencil(self) -> bool {
-        matches!(
-            self,
-            Self::Stencil8 | Self::Depth24PlusStencil8 | Self::Depth32FloatStencil8
-        )
+        matches!(self, Self::Depth24PlusStencil8 | Self::Depth32FloatStencil8)
     }
 }
 
@@ -163,7 +163,6 @@ impl From<DepthStencilFormat> for TextureFormat {
     #[inline]
     fn from(format: DepthStencilFormat) -> Self {
         match format {
-            DepthStencilFormat::Stencil8 => TextureFormat::Stencil8,
             DepthStencilFormat::Depth16Unorm => TextureFormat::Depth16Unorm,
             DepthStencilFormat::Depth24Plus => TextureFormat::Depth24Plus,
             DepthStencilFormat::Depth24PlusStencil8 => TextureFormat::Depth24PlusStencil8,
@@ -173,12 +172,15 @@ impl From<DepthStencilFormat> for TextureFormat {
     }
 }
 
-/// Selects the stencil test used by camera-view pipelines.
+/// Selects the stencil test used by built-in 3D camera-view pipelines.
+///
+/// Core2d keeps its fixed depth-only attachment and does not apply this
+/// setting.
 ///
 /// Disabled preserves Bevy's normal depth-only behavior. Equal enables a
 /// read-only stencil comparison against the render pass's stencil reference,
 /// which is useful for rendering a view through a previously written portal
-/// mask.
+/// mask. Requests on depth-only formats are ignored during extraction.
 #[derive(
     Component, Reflect, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
 )]
